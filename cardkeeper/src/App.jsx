@@ -1,4 +1,10 @@
 import { useState, useEffect } from "react";
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import {
+  collection, doc, setDoc, updateDoc, deleteDoc,
+  onSnapshot, query, orderBy, getDocs, writeBatch,
+} from "firebase/firestore";
+import { auth, googleProvider, db } from "./firebase.js";
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 const BANKS = {
@@ -277,15 +283,35 @@ function CardForm({ initial, onSave, onCancel }) {
   );
 }
 
+// ── Login screen ──────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin, loggingIn }) {
+  return (
+    <div style={{ fontFamily: "'PingFang TC','Noto Sans TC',sans-serif", background: "linear-gradient(160deg,#2B7A78 0%,#17A589 100%)", minHeight: "100vh", maxWidth: 430, margin: "0 auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, boxSizing: "border-box" }}>
+      <div style={{ fontSize: 56, marginBottom: 16 }}>💳</div>
+      <div style={{ fontSize: 28, fontWeight: 800, color: "#fff", letterSpacing: -.5 }}>CardKeeper</div>
+      <div style={{ fontSize: 14, color: "rgba(255,255,255,.85)", marginTop: 8, marginBottom: 36, textAlign: "center" }}>登入後，你的信用卡資料會安全地同步到雲端</div>
+      <button onClick={onLogin} disabled={loggingIn} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "none", borderRadius: 16, padding: "14px 28px", fontSize: 16, fontWeight: 700, color: "#1A4A49", cursor: loggingIn ? "wait" : "pointer", boxShadow: "0 8px 30px rgba(0,0,0,.2)", fontFamily: "inherit" }}>
+        <svg width="20" height="20" viewBox="0 0 48 48">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        {loggingIn ? "登入中…" : "使用 Google 登入"}
+      </button>
+    </div>
+  );
+}
+
 // ── Main App ──────────────────────────────────────────────────────────────────
 let seq = Date.now();
 const mkId = () => `c_${seq++}`;
 
 export default function App() {
-  const [cards, setCards] = useState(() => {
-    try { const s = localStorage.getItem(LS_KEY); return s ? JSON.parse(s) : []; }
-    catch { return []; }
-  });
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [cards, setCards] = useState([]);
   const [tab, setTab] = useState("cards");
   const [showAdd, setShowAdd] = useState(false);
   const [editCard, setEditCard] = useState(null);
@@ -293,11 +319,51 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [notifGranted, setNotifGranted] = useState(false);
 
-  // Persist to localStorage whenever cards change
+  // Watch auth state
   useEffect(() => {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(cards)); }
-    catch {}
-  }, [cards]);
+    const unsub = onAuthStateChanged(auth, u => { setUser(u); setAuthLoading(false); });
+    return unsub;
+  }, []);
+
+  // Subscribe to this user's cards in Firestore.
+  // First login: if the collection is empty, migrate any cards left in localStorage.
+  useEffect(() => {
+    if (!user) { setCards([]); return; }
+    const cardsCol = collection(db, "users", user.uid, "cards");
+    let unsub = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDocs(cardsCol);
+        if (snap.empty) {
+          const local = JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+          if (Array.isArray(local) && local.length) {
+            const batch = writeBatch(db);
+            local.forEach((c, i) => {
+              const { id, ...data } = c;
+              batch.set(doc(cardsCol, id || mkId()), { ...data, createdAt: Date.now() + i });
+            });
+            await batch.commit();
+          }
+        }
+      } catch (e) {
+        console.error("讀取雲端資料失敗", e);
+      }
+      if (cancelled) return;
+      unsub = onSnapshot(query(cardsCol, orderBy("createdAt")), s => {
+        setCards(s.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, e => console.error("即時同步失敗", e));
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [user]);
+
+  const login = async () => {
+    setLoggingIn(true);
+    try { await signInWithPopup(auth, googleProvider); }
+    catch (e) { if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") console.error("登入失敗", e); }
+    finally { setLoggingIn(false); }
+  };
+  const logout = () => signOut(auth);
 
   // Check notification permission and schedule reminders
   useEffect(() => {
@@ -314,18 +380,30 @@ export default function App() {
     }
   };
 
-  const addCard = form => {
-    setCards(c => [...c, { ...form, id: mkId(), benefits: null }]);
-    setShowAdd(false); showToast("✅ 信用卡已新增");
+  const cardDoc = id => doc(db, "users", user.uid, "cards", id);
+
+  const addCard = async form => {
+    setShowAdd(false);
+    try {
+      await setDoc(cardDoc(mkId()), { ...form, benefits: null, createdAt: Date.now() });
+      showToast("✅ 信用卡已新增");
+    } catch (e) { console.error(e); showToast("⚠️ 新增失敗，請稍後再試"); }
   };
-  const saveEdit = form => {
-    setCards(c => c.map(x => x.id === editCard.id ? { ...x, ...form } : x));
-    if (detailCard?.id === editCard.id) setDetailCard(d => ({ ...d, ...form }));
-    setEditCard(null); showToast("✅ 已儲存變更");
+  const saveEdit = async form => {
+    const id = editCard.id;
+    if (detailCard?.id === id) setDetailCard(d => ({ ...d, ...form }));
+    setEditCard(null);
+    try {
+      await updateDoc(cardDoc(id), { ...form });
+      showToast("✅ 已儲存變更");
+    } catch (e) { console.error(e); showToast("⚠️ 儲存失敗，請稍後再試"); }
   };
-  const deleteCard = id => {
-    setCards(c => c.filter(x => x.id !== id));
-    setDetailCard(null); setEditCard(null); showToast("🗑 已刪除卡片");
+  const deleteCard = async id => {
+    setDetailCard(null); setEditCard(null);
+    try {
+      await deleteDoc(cardDoc(id));
+      showToast("🗑 已刪除卡片");
+    } catch (e) { console.error(e); showToast("⚠️ 刪除失敗，請稍後再試"); }
   };
 
   const searchBenefits = async card => {
@@ -349,8 +427,9 @@ export default function App() {
   };
   const handleSearchBenefits = async card => {
     const result = await searchBenefits(card);
-    setCards(c => c.map(x => x.id === card.id ? { ...x, benefits: result } : x));
     if (detailCard?.id === card.id) setDetailCard(d => ({ ...d, benefits: result }));
+    try { await updateDoc(cardDoc(card.id), { benefits: result }); }
+    catch (e) { console.error(e); }
     return result;
   };
 
@@ -364,6 +443,15 @@ export default function App() {
       return { ...c, payDate, diff: Math.round((payDate - today) / 86400000) };
     })
     .sort((a, b) => a.diff - b.diff);
+
+  if (authLoading) {
+    return (
+      <div style={{ fontFamily: "'PingFang TC','Noto Sans TC',sans-serif", background: "#EDF5F5", minHeight: "100vh", maxWidth: 430, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "center", color: "#8ABABA", fontSize: 15, fontWeight: 600 }}>
+        載入中…
+      </div>
+    );
+  }
+  if (!user) return <LoginScreen onLogin={login} loggingIn={loggingIn} />;
 
   return (
     <div style={{ fontFamily: "'PingFang TC','Noto Sans TC',sans-serif", background: "#EDF5F5", minHeight: "100vh", maxWidth: 430, margin: "0 auto", position: "relative", overflowX: "hidden" }}>
@@ -384,7 +472,14 @@ export default function App() {
           </div>
           <button onClick={() => setShowAdd(true)} style={{ background: "rgba(255,255,255,.95)", border: "none", borderRadius: 16, width: 52, height: 52, cursor: "pointer", color: "#2B7A78", fontSize: 30, fontWeight: 300, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(0,0,0,.18)", lineHeight: 1 }}>+</button>
         </div>
-        <div style={{ fontSize: 13, opacity: .8 }}>共 {cards.length} 張信用卡</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 13, opacity: .8 }}>共 {cards.length} 張信用卡</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {user.photoURL && <img src={user.photoURL} alt="" referrerPolicy="no-referrer" style={{ width: 26, height: 26, borderRadius: "50%", border: "1.5px solid rgba(255,255,255,.5)" }} />}
+            <span style={{ fontSize: 12, opacity: .9, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.displayName || user.email}</span>
+            <button onClick={logout} style={{ background: "rgba(255,255,255,.18)", border: "1px solid rgba(255,255,255,.35)", borderRadius: 20, padding: "4px 12px", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>登出</button>
+          </div>
+        </div>
       </div>
 
       {/* Tabs */}
