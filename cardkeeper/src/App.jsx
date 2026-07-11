@@ -406,17 +406,19 @@ export default function App() {
     } catch (e) { console.error(e); showToast("⚠️ 刪除失敗，請稍後再試"); }
   };
 
+  // 透過自家 serverless function 代理查詢（API key 只存在伺服器端）
   const searchBenefits = async card => {
-    const prompt = `你是台灣信用卡優惠專家。整理「${card.bank} ${card.cardType}」的最新刷卡優惠，以純 JSON 陣列回覆（不含 markdown），格式：[{"title":"...","tags":["..."],"rate":2.5,"cap":300,"maxSpend":12000}]，提供 3-4 筆，cap/maxSpend 無上限設 null。`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/benefits", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: [{ role: "user", content: prompt }] }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ bank: card.bank, cardType: card.cardType }),
       });
-      const data = await res.json();
-      const text = (data.content || []).map(b => b.type === "text" ? b.text : "").join("\n");
-      return JSON.parse(text.replace(/```json|```/g, "").trim());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const benefits = await res.json();
+      if (!Array.isArray(benefits)) throw new Error("unexpected response");
+      return benefits;
     } catch {
       return [
         { title: "行動支付回饋", tags: ["LINE Pay", "Apple Pay"], rate: 3, cap: 300, maxSpend: 10000 },
