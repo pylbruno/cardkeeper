@@ -154,52 +154,6 @@ function CardVisual({ card }) {
   );
 }
 
-function Tag({ color, bg, children }) {
-  return <span style={{ display: "inline-block", background: bg || "rgba(43,122,120,.12)", color: color || "#2B7A78", borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 600, margin: "2px 3px" }}>{children}</span>;
-}
-
-function BenefitCard({ b }) {
-  const tc = [
-    { bg: "rgba(43,122,120,.12)", color: "#2B7A78" },
-    { bg: "rgba(23,165,137,.12)", color: "#17A589" },
-    { bg: "rgba(52,152,219,.12)", color: "#2980B9" },
-    { bg: "rgba(155,89,182,.12)", color: "#8E44AD" },
-    { bg: "rgba(230,126,34,.12)", color: "#CA6F1E" },
-  ];
-  return (
-    <div style={{ background: "rgba(43,122,120,.04)", border: "1px solid rgba(43,122,120,.12)", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
-      <div style={{ fontWeight: 700, color: "#1A4A49", marginBottom: 8, fontSize: 14 }}>{b.title}</div>
-      <div style={{ display: "flex", flexWrap: "wrap", marginBottom: 8 }}>{b.tags.map((t, i) => <Tag key={i} {...tc[i % tc.length]}>{t}</Tag>)}</div>
-      <div style={{ display: "flex", gap: 12, fontSize: 12, color: "#4A7C7B" }}>
-        <span>回饋 <b style={{ color: "#2B7A78" }}>{b.rate}%</b></span>
-        {b.cap && <span>上限 <b style={{ color: "#2B7A78" }}>NT${b.cap}</b></span>}
-        {b.maxSpend && <span>達上限刷 <b style={{ color: "#2B7A78" }}>NT${b.maxSpend}</b></span>}
-      </div>
-    </div>
-  );
-}
-
-function BenefitsSection({ card, onSearch }) {
-  const [loading, setLoading] = useState(false);
-  const [benefits, setBenefits] = useState(card.benefits || null);
-  const go = async () => {
-    setLoading(true); setBenefits(null);
-    const r = await onSearch(card);
-    setBenefits(r); setLoading(false);
-  };
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#1A4A49" }}>刷卡優惠建議</div>
-        <button onClick={go} style={{ background: "rgba(43,122,120,.1)", border: "none", borderRadius: 20, padding: "6px 14px", color: "#2B7A78", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{loading ? "搜尋中…" : "🔍 更新"}</button>
-      </div>
-      {loading && <div style={{ textAlign: "center", padding: "20px 0", color: "#6B9A9A", fontSize: 14 }}>🔍 正在搜尋最新刷卡優惠資訊…</div>}
-      {!loading && benefits && benefits.map((b, i) => <BenefitCard key={i} b={b} />)}
-      {!loading && !benefits && <div style={{ textAlign: "center", padding: "20px 0", color: "#8ABABA", fontSize: 13 }}>點擊「更新」搜尋最新優惠資訊</div>}
-    </div>
-  );
-}
-
 function CardForm({ initial, onSave, onCancel }) {
   const empty = { customName: "", bank: "", cardType: "", limit: "", billingDay: "", payDay: "", autoDebit: false, autoDebitNotify: false, showExpiry: false, expiry: "" };
   const [form, setForm] = useState(initial || empty);
@@ -385,7 +339,7 @@ export default function App() {
   const addCard = async form => {
     setShowAdd(false);
     try {
-      await setDoc(cardDoc(mkId()), { ...form, benefits: null, createdAt: Date.now() });
+      await setDoc(cardDoc(mkId()), { ...form, createdAt: Date.now() });
       showToast("✅ 信用卡已新增");
     } catch (e) { console.error(e); showToast("⚠️ 新增失敗，請稍後再試"); }
   };
@@ -404,35 +358,6 @@ export default function App() {
       await deleteDoc(cardDoc(id));
       showToast("🗑 已刪除卡片");
     } catch (e) { console.error(e); showToast("⚠️ 刪除失敗，請稍後再試"); }
-  };
-
-  // 透過自家 serverless function 代理查詢（API key 只存在伺服器端）
-  const searchBenefits = async card => {
-    try {
-      const idToken = await auth.currentUser.getIdToken();
-      const res = await fetch("/api/benefits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({ bank: card.bank, cardType: card.cardType }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const benefits = await res.json();
-      if (!Array.isArray(benefits)) throw new Error("unexpected response");
-      return benefits;
-    } catch {
-      return [
-        { title: "行動支付回饋", tags: ["LINE Pay", "Apple Pay"], rate: 3, cap: 300, maxSpend: 10000 },
-        { title: "國內一般消費", tags: ["國內", "不限方式"], rate: 1, cap: null, maxSpend: null },
-        { title: "國外消費", tags: ["國外刷卡"], rate: 2.5, cap: 500, maxSpend: 20000 },
-      ];
-    }
-  };
-  const handleSearchBenefits = async card => {
-    const result = await searchBenefits(card);
-    if (detailCard?.id === card.id) setDetailCard(d => ({ ...d, benefits: result }));
-    try { await updateDoc(cardDoc(card.id), { benefits: result }); }
-    catch (e) { console.error(e); }
-    return result;
   };
 
   const today = new Date();
@@ -590,7 +515,6 @@ export default function App() {
                 <div key={k}><div style={{ fontSize: 11, color: "#8ABABA", marginBottom: 3 }}>{k}</div><div style={{ fontSize: 14, fontWeight: 700, color: "#1A4A49" }}>{v}</div></div>
               ))}
             </div>
-            <BenefitsSection card={detailCard} onSearch={handleSearchBenefits} />
             <button onClick={() => { setDetailCard(null); setEditCard(detailCard); }} style={{ width: "100%", marginTop: 8, padding: "13px", borderRadius: 14, border: "none", background: "linear-gradient(135deg,#2B7A78,#17A589)", color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>✏️ 編輯此卡片</button>
           </div>
         )}

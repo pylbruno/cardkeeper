@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/benefits.js": {
-      "maxDuration": 60
-    }
-  }
-}
